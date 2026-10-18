@@ -72,22 +72,17 @@ def format_assignment_message(
 
             if item["is_verified"]:
                 if item.get("verified_by_handle") == "waived_deleted_tweet":
-                    status_str = "🗑️ <i>Waived (Tweet Deleted on X)</i>"
+                    status_str = "\n   └ Status: 🗑️ <i>Waived (Tweet Deleted on X)</i>"
                 else:
                     by = f" by @{item['verified_by_handle']}" if item.get("verified_by_handle") else ""
-                    status_str = f"✅ <b>Verified</b>{by}"
+                    status_str = f"\n   └ Status: ✅ <b>Verified</b>{by}"
             else:
-                status_str = "⏳ <i>Pending</i>"
+                status_str = ""
 
             lines.append(
-                f"{idx}. 👤 <b>{author_str}</b> (TG: <b>{tg_poster_str}</b>): <a href=\"{url}\">{url}</a>\n"
-                f"   └ Status: {status_str}"
+                f"{idx}. 👤 <b>{author_str}</b> (TG: <b>{tg_poster_str}</b>): <a href=\"{url}\">{url}</a>"
+                f"{status_str}"
             )
-
-        lines.append(
-            "\n💡 <i>Leave a comment on the posts above using any of your declared X accounts. "
-            "Once posted, click the button below to verify your comments with Sorsa API!</i>"
-        )
 
     if is_completed:
         lines.append("\n🎉 <b>All assigned comments have been successfully verified!</b>")
