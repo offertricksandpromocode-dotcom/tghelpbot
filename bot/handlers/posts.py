@@ -1,3 +1,4 @@
+import logging
 from typing import Optional
 from aiogram import Router, types, F
 from bot.database import Database
@@ -5,6 +6,7 @@ from bot.config import config
 from bot.utils.twitter_helper import extract_tweet_info
 from bot.keyboards.inline import get_task_keyboard, get_no_accounts_keyboard
 
+logger = logging.getLogger(__name__)
 router = Router(name="posts_router")
 
 
@@ -12,7 +14,8 @@ def format_assignment_message(
     submitted_url: str,
     assignments: list,
     declared_handles: list[str],
-    auto_activated_handle: Optional[str] = None
+    auto_activated_handle: Optional[str] = None,
+    submitter_mention: Optional[str] = None
 ) -> tuple[str, int, int, bool]:
     total_count = len(assignments)
     verified_count = sum(1 for a in assignments if a["is_verified"])
@@ -22,8 +25,12 @@ def format_assignment_message(
 
     lines = [
         "📌 <b>New X Post Submitted!</b>\n",
-        f"🔗 <b>Your Link:</b> {submitted_url}\n",
     ]
+
+    if submitter_mention:
+        lines.append(f"👤 <b>Submitted by:</b> {submitter_mention}\n")
+
+    lines.append(f"🔗 <b>Post Link:</b> {submitted_url}\n")
 
     if auto_activated_handle:
         lines.append(
@@ -32,7 +39,7 @@ def format_assignment_message(
         )
 
     lines.extend([
-        f"👤 <b>Declared Engagement Handles:</b> {handles_str}\n",
+        f"🎯 <b>Your Declared Handles:</b> {handles_str}\n",
         f"📋 <b>Your Assigned Posts to Comment ({verified_count}/{total_count}):</b>"
     ])
 
@@ -44,6 +51,9 @@ def format_assignment_message(
     else:
         for idx, item in enumerate(assignments, start=1):
             url = item["tweet_url"]
+            author = item.get("author_handle")
+            author_str = f"@{author}" if author and author.lower() not in ("i", "status") else "X Post"
+
             if item["is_verified"]:
                 if item.get("verified_by_handle") == "waived_deleted_tweet":
                     status_str = "🗑️ <i>Waived (Tweet Deleted on X)</i>"
@@ -53,7 +63,7 @@ def format_assignment_message(
             else:
                 status_str = "⏳ <i>Pending</i>"
 
-            lines.append(f"{idx}. <a href=\"{url}\">{url}</a>\n   └ Status: {status_str}")
+            lines.append(f"{idx}. 👤 <b>{author_str}</b>: <a href=\"{url}\">{url}</a>\n   └ Status: {status_str}")
 
         lines.append(
             "\n💡 <i>Leave a comment on the posts above using any of your declared X accounts. "
@@ -82,6 +92,13 @@ async def handle_potential_link(message: types.Message, db: Database):
     telegram_id = message.from_user.id
     is_group = message.chat.type in ("group", "supergroup")
     chat_id = message.chat.id if is_group else None
+    user_mention = message.from_user.mention_html()
+
+    # Automatically delete the user's raw pasted link to keep chat/group clean
+    try:
+        await message.delete()
+    except Exception as e:
+        logger.debug("Could not delete user link message: %s", e)
 
     # Ensure user exists in users table
     user = message.from_user
@@ -105,8 +122,7 @@ async def handle_potential_link(message: types.Message, db: Database):
             auto_activated_handle = clean_user
         else:
             # Fallback if handle couldn't be extracted from a redirect link
-            user_mention = message.from_user.mention_html()
-            await message.reply(
+            await message.answer(
                 f"⚠️ {user_mention}, <b>Action Required: Declare your X Account</b>\n\n"
                 "Before submitting posts, you must register the X (Twitter) account you use to comment.\n"
                 "Please click below to register:",
@@ -125,9 +141,10 @@ async def handle_potential_link(message: types.Message, db: Database):
         msg_text, verified_count, total_count, is_completed = format_assignment_message(
             existing_post["tweet_url"],
             assignments,
-            declared_handles
+            declared_handles,
+            submitter_mention=user_mention
         )
-        await message.reply(
+        await message.answer(
             "ℹ️ <b>This tweet has already been registered!</b>\n\n" + msg_text,
             parse_mode="HTML",
             disable_web_page_preview=True,
@@ -149,7 +166,7 @@ async def handle_potential_link(message: types.Message, db: Database):
         chat_id=chat_id
     )
     if not new_post_id:
-        await message.reply("❌ Error registering post in database. Please try again.")
+        await message.answer("❌ Error registering post in database. Please try again.")
         return
 
     # Fetch 15 posts submitted above this one (scoped to group if in group)
@@ -170,10 +187,11 @@ async def handle_potential_link(message: types.Message, db: Database):
         canonical_url,
         assignments,
         declared_handles,
-        auto_activated_handle=auto_activated_handle
+        auto_activated_handle=auto_activated_handle,
+        submitter_mention=user_mention
     )
 
-    await message.reply(
+    await message.answer(
         msg_text,
         parse_mode="HTML",
         disable_web_page_preview=True,
