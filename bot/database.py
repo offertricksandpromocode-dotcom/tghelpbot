@@ -442,6 +442,16 @@ class Database:
             await db.commit()
             return cursor.rowcount > 0
 
+    async def delete_inactive_sorsa_keys(self) -> int:
+        """Deletes all keys that are marked as rate_limited or invalid."""
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute("""
+                DELETE FROM sorsa_api_keys
+                WHERE status != 'active'
+            """)
+            await db.commit()
+            return cursor.rowcount
+
     async def get_sorsa_keys_stats(self) -> Dict[str, int]:
         """Returns count of active, rate_limited, and invalid keys."""
         async with aiosqlite.connect(self.db_path) as db:

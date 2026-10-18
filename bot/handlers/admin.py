@@ -73,7 +73,7 @@ async def cmd_keys(message: types.Message, db: Database):
     await message.answer(text, parse_mode="HTML", reply_markup=get_api_keys_keyboard())
 
 
-@router.message(Command("addkeys"))
+@router.message(Command("addkeys", "addkey"))
 async def cmd_addkeys(message: types.Message, db: Database):
     if not is_admin(message.from_user.id):
         await message.answer("⛔ Access restricted to administrators.")
@@ -83,8 +83,8 @@ async def cmd_addkeys(message: types.Message, db: Database):
     if len(args) < 2:
         await message.answer(
             "⚠️ Please provide one or more Sorsa API keys.\n\n"
-            "Example:\n<code>/addkeys key_1 key_2 key_3</code>\n"
-            "<i>(You can also separate keys with commas or newlines)</i>",
+            "Example:\n<code>/addkey your_sorsa_api_key</code>\n"
+            "<i>(You can also paste multiple keys separated by spaces, commas, or newlines)</i>",
             parse_mode="HTML"
         )
         return
@@ -97,10 +97,23 @@ async def cmd_addkeys(message: types.Message, db: Database):
 
     added, duplicates = await db.add_sorsa_keys(keys)
     await message.answer(
-        f"✅ <b>Bulk Keys Processed:</b>\n"
+        f"✅ <b>Sorsa Key(s) Processed:</b>\n"
         f"• Added: <b>{added}</b> new keys\n"
         f"• Already in Pool: <b>{duplicates}</b> duplicate(s)\n\n"
         f"Use /keys to view pool status.",
+        parse_mode="HTML"
+    )
+
+
+@router.message(Command("delinactive", "deldeadkeys"))
+async def cmd_del_inactive(message: types.Message, db: Database):
+    if not is_admin(message.from_user.id):
+        await message.answer("⛔ Access restricted to administrators.")
+        return
+
+    deleted = await db.delete_inactive_sorsa_keys()
+    await message.answer(
+        f"🗑️ Successfully deleted <b>{deleted}</b> inactive / rate-limited / invalid key(s) from the pool!",
         parse_mode="HTML"
     )
 
@@ -191,8 +204,35 @@ async def cb_reset_keys(callback: types.CallbackQuery, db: Database):
         f"• 🟡 <b>Rate-Limited / Exhausted:</b> {stats['rate_limited']}\n"
         f"• 🔴 <b>Invalid Keys:</b> {stats['invalid']}\n"
         f"• 📁 <b>Total Keys in Pool:</b> {stats['total']}\n\n"
-        "💡 <i>You can paste bulk keys below or use:</i>\n"
-        "• <code>/addkeys key1 key2 key3 ...</code>\n"
+        "💡 <i>You can paste keys below or use:</i>\n"
+        "• <code>/addkey &lt;key&gt;</code> - Add Sorsa API key\n"
+        "• <code>/delinactive</code> - Delete all dead / rate-limited keys\n"
+        "• <code>/resetkeys</code> - Reactivate all rate-limited keys\n"
+        "• <code>/delkey &lt;key&gt;</code> - Remove a specific key"
+    )
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_api_keys_keyboard())
+
+
+@router.callback_query(F.data == "del_inactive_keys")
+async def cb_del_inactive_keys(callback: types.CallbackQuery, db: Database):
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Access restricted.", show_alert=True)
+        return
+
+    deleted = await db.delete_inactive_sorsa_keys()
+    await callback.answer(f"🗑️ Deleted {deleted} inactive key(s)!", show_alert=True)
+
+    # Refresh dashboard
+    stats = await db.get_sorsa_keys_stats()
+    text = (
+        "🔑 <b>Sorsa API Key Pool Management</b>\n\n"
+        f"• 🟢 <b>Active Keys:</b> {stats['active']}\n"
+        f"• 🟡 <b>Rate-Limited / Exhausted:</b> {stats['rate_limited']}\n"
+        f"• 🔴 <b>Invalid Keys:</b> {stats['invalid']}\n"
+        f"• 📁 <b>Total Keys in Pool:</b> {stats['total']}\n\n"
+        "💡 <i>You can paste keys below or use:</i>\n"
+        "• <code>/addkey &lt;key&gt;</code> - Add Sorsa API key\n"
+        "• <code>/delinactive</code> - Delete all dead / rate-limited keys\n"
         "• <code>/resetkeys</code> - Reactivate all rate-limited keys\n"
         "• <code>/delkey &lt;key&gt;</code> - Remove a specific key"
     )

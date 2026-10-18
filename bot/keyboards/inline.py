@@ -74,8 +74,11 @@ def get_api_keys_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="➕ Add Bulk Keys", callback_data="prompt_add_keys"),
-                InlineKeyboardButton(text="🔄 Reset Exhausted Keys", callback_data="reset_keys"),
+                InlineKeyboardButton(text="➕ Add Sorsa API Key(s)", callback_data="prompt_add_keys"),
+            ],
+            [
+                InlineKeyboardButton(text="🗑️ Delete Inactive Keys", callback_data="del_inactive_keys"),
+                InlineKeyboardButton(text="🔄 Reset to Active", callback_data="reset_keys"),
             ],
             [
                 InlineKeyboardButton(text="📋 List All Keys", callback_data="list_keys"),

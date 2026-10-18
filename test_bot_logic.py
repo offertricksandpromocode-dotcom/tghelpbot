@@ -185,6 +185,15 @@ class TestEngagementBot(unittest.IsolatedAsyncioTestCase):
         stats_final = await self.db.get_sorsa_keys_stats()
         self.assertEqual(stats_final["total"], 2)
 
+        # Mark key_gamma as invalid, then test delete_inactive_sorsa_keys
+        await self.db.mark_sorsa_key_failed("key_gamma", "invalid", "HTTP 401")
+        deleted_count = await self.db.delete_inactive_sorsa_keys()
+        self.assertEqual(deleted_count, 1)
+        stats_clean = await self.db.get_sorsa_keys_stats()
+        self.assertEqual(stats_clean["total"], 1)
+        self.assertEqual(stats_clean["active"], 1)
+        self.assertEqual(stats_clean["invalid"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
