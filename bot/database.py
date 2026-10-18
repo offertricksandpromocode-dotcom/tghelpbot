@@ -38,13 +38,13 @@ class Database:
                 );
             """)
 
-            # Submitted posts queue
+            # Submitted posts queue (same tweet can be registered multiple times)
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS posts_queue (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     telegram_id INTEGER NOT NULL,
                     chat_id INTEGER,
-                    tweet_id TEXT NOT NULL UNIQUE,
+                    tweet_id TEXT NOT NULL,
                     tweet_url TEXT NOT NULL,
                     author_handle TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -53,7 +53,38 @@ class Database:
                 );
             """)
 
-            # Safe migration for existing DB
+            # Safe migration: if posts_queue had UNIQUE on tweet_id, recreate without UNIQUE
+            try:
+                async with db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='posts_queue'") as cursor:
+                    row = await cursor.fetchone()
+                    if row and "UNIQUE" in row[0].upper() and "TWEET_ID" in row[0].upper():
+                        logger.info("Migrating posts_queue to allow duplicate tweet_ids...")
+                        await db.execute("PRAGMA foreign_keys = OFF;")
+                        await db.execute("""
+                            CREATE TABLE posts_queue_new (
+                                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                telegram_id INTEGER NOT NULL,
+                                chat_id INTEGER,
+                                tweet_id TEXT NOT NULL,
+                                tweet_url TEXT NOT NULL,
+                                author_handle TEXT,
+                                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                                status TEXT DEFAULT 'pending',
+                                FOREIGN KEY (telegram_id) REFERENCES users (telegram_id) ON DELETE CASCADE
+                            );
+                        """)
+                        await db.execute("""
+                            INSERT INTO posts_queue_new (id, telegram_id, chat_id, tweet_id, tweet_url, author_handle, created_at, status)
+                            SELECT id, telegram_id, chat_id, tweet_id, tweet_url, author_handle, created_at, status FROM posts_queue;
+                        """)
+                        await db.execute("DROP TABLE posts_queue;")
+                        await db.execute("ALTER TABLE posts_queue_new RENAME TO posts_queue;")
+                        await db.execute("PRAGMA foreign_keys = ON;")
+                        await db.commit()
+            except Exception as e:
+                logger.warning("Migration for duplicate tweets check skipped/failed: %s", e)
+
+            # Safe migration for existing DB to add chat_id if missing
             try:
                 await db.execute("ALTER TABLE posts_queue ADD COLUMN chat_id INTEGER;")
                 await db.commit()
@@ -104,6 +135,17 @@ class Database:
                     first_name = excluded.first_name;
             """, (telegram_id, username, first_name))
             await db.commit()
+
+    async def get_user(self, telegram_id: int) -> Optional[Dict[str, Any]]:
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("""
+                SELECT telegram_id, username, first_name, created_at
+                FROM users
+                WHERE telegram_id = ?
+            """, (telegram_id,)) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
 
     # X Accounts Management
     async def add_x_account(self, telegram_id: int, x_username: str, is_primary: bool = False) -> bool:
@@ -164,7 +206,7 @@ class Database:
     ) -> Optional[int]:
         """
         Adds a tweet to the posts queue with optional group chat_id.
-        Returns the new post ID, or None if tweet already exists.
+        Returns the new post ID. Supports registering the same tweet multiple times.
         """
         async with aiosqlite.connect(self.db_path) as db:
             try:
@@ -174,7 +216,8 @@ class Database:
                 """, (telegram_id, chat_id, tweet_id, tweet_url, author_handle))
                 await db.commit()
                 return cursor.lastrowid
-            except aiosqlite.IntegrityError:
+            except Exception as e:
+                logger.error("Error inserting post into posts_queue: %s", e)
                 return None
 
     async def get_post_by_tweet_id(self, tweet_id: str) -> Optional[Dict[str, Any]]:
@@ -184,6 +227,8 @@ class Database:
                 SELECT id, telegram_id, chat_id, tweet_id, tweet_url, author_handle, created_at, status
                 FROM posts_queue
                 WHERE tweet_id = ?
+                ORDER BY id DESC
+                LIMIT 1
             """, (tweet_id,)) as cursor:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
@@ -204,37 +249,50 @@ class Database:
         current_post_id: int,
         exclude_telegram_id: int,
         limit: int = 15,
-        chat_id: Optional[int] = None
+        chat_id: Optional[int] = None,
+        exclude_tweet_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
         Fetches up to `limit` posts submitted prior to `current_post_id`,
-        excluding posts submitted by the same user.
+        excluding posts submitted by the same user and optionally excluding current tweet_id.
         If chat_id is provided, filters by group chat_id.
+        Deduplicates by tweet_id so the assignee gets distinct tweets to comment on.
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            if chat_id is not None:
-                query = """
-                    SELECT id, telegram_id, chat_id, tweet_id, tweet_url, author_handle, created_at, status
-                    FROM posts_queue
-                    WHERE id < ? AND telegram_id != ? AND chat_id = ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                """
-                params = (current_post_id, exclude_telegram_id, chat_id, limit)
-            else:
-                query = """
-                    SELECT id, telegram_id, chat_id, tweet_id, tweet_url, author_handle, created_at, status
-                    FROM posts_queue
-                    WHERE id < ? AND telegram_id != ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                """
-                params = (current_post_id, exclude_telegram_id, limit)
+            query_parts = ["id < ?", "telegram_id != ?"]
+            params = [current_post_id, exclude_telegram_id]
 
-            async with db.execute(query, params) as cursor:
+            if exclude_tweet_id:
+                query_parts.append("tweet_id != ?")
+                params.append(exclude_tweet_id)
+
+            if chat_id is not None:
+                query_parts.append("chat_id = ?")
+                params.append(chat_id)
+
+            where_clause = " AND ".join(query_parts)
+            query = f"""
+                SELECT id, telegram_id, chat_id, tweet_id, tweet_url, author_handle, created_at, status
+                FROM posts_queue
+                WHERE {where_clause}
+                ORDER BY id DESC
+                LIMIT ?
+            """
+            params.append(limit * 3)
+
+            async with db.execute(query, tuple(params)) as cursor:
                 rows = await cursor.fetchall()
-                return [dict(row) for row in rows]
+                seen_tweet_ids = set()
+                distinct_posts = []
+                for row in rows:
+                    t_id = row["tweet_id"]
+                    if t_id not in seen_tweet_ids:
+                        seen_tweet_ids.add(t_id)
+                        distinct_posts.append(dict(row))
+                        if len(distinct_posts) >= limit:
+                            break
+                return distinct_posts
 
     # Task Assignments
     async def create_assignments(
@@ -259,7 +317,8 @@ class Database:
 
     async def get_assignments(self, submitted_post_id: int) -> List[Dict[str, Any]]:
         """
-        Retrieves all assigned posts and their verification status for a submitted post.
+        Retrieves all assigned posts and their verification status for a submitted post,
+        including the author's X handle and the Telegram username of the user who posted each link.
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -271,11 +330,15 @@ class Database:
                     ta.is_verified,
                     ta.verified_by_handle,
                     ta.verified_at,
+                    pq.telegram_id,
                     pq.tweet_id,
                     pq.tweet_url,
-                    pq.author_handle
+                    pq.author_handle,
+                    u.username AS tg_username,
+                    u.first_name AS tg_first_name
                 FROM task_assignments ta
                 JOIN posts_queue pq ON ta.assigned_post_id = pq.id
+                LEFT JOIN users u ON pq.telegram_id = u.telegram_id
                 WHERE ta.submitted_post_id = ?
                 ORDER BY ta.id ASC
             """, (submitted_post_id,)) as cursor:

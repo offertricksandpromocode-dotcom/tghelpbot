@@ -84,12 +84,24 @@ async def cb_check_task(
         elif result.error_message:
             errors.append(result.error_message)
 
+    # Fetch submitter's info to retain their TG username in the message header
+    submitter_user = await db.get_user(submitter_id)
+    submitter_mention = None
+    if submitter_user:
+        if submitter_user.get("username"):
+            submitter_mention = f"@{submitter_user['username']}"
+        elif submitter_user.get("first_name"):
+            submitter_mention = f'<a href="tg://user?id={submitter_id}">{submitter_user["first_name"]}</a>'
+        else:
+            submitter_mention = f"User {submitter_id}"
+
     # Re-fetch updated assignments
     updated_assignments = await db.get_assignments(submitted_post_id)
     msg_text, verified_count, total_count, is_completed = format_assignment_message(
         post["tweet_url"],
         updated_assignments,
-        declared_handles
+        declared_handles,
+        submitter_mention=submitter_mention
     )
 
     if is_completed:

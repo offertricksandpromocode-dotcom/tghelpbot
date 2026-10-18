@@ -123,6 +123,31 @@ class TestEngagementBot(unittest.IsolatedAsyncioTestCase):
         for a in assignments:
             self.assertEqual(a["is_verified"], 0)
 
+        # Verify poster's TG username is populated in assignments
+        self.assertEqual(assignments[0]["tg_username"], "user20")
+        self.assertEqual(assignments[0]["author_handle"], "user20")
+
+        # Verify formatting includes TG username of poster and submitter
+        from bot.handlers.posts import format_assignment_message
+        msg, v_count, t_count, is_comp = format_assignment_message(
+            "https://x.com/newuser/status/999999",
+            assignments,
+            ["newuser_x"],
+            submitter_mention="@newuser"
+        )
+        self.assertIn("Submitted by:</b> @newuser", msg)
+        self.assertIn("TG: <b>@user20</b>", msg)
+
+        # Test registering the same tweet multiple times (allowed without issue)
+        second_post_id = await self.db.add_post(
+            telegram_id=new_user_id,
+            tweet_id="new_user_tweet_id",
+            tweet_url="https://x.com/newuser/status/999999",
+            author_handle="newuser_x"
+        )
+        self.assertIsNotNone(second_post_id)
+        self.assertNotEqual(new_post_id, second_post_id)
+
         # Verify marking an assignment as verified
         first_assignment_id = assignments[0]["assignment_id"]
         await self.db.mark_assignment_verified(first_assignment_id, "newuser_alt")

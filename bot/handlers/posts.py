@@ -54,6 +54,22 @@ def format_assignment_message(
             author = item.get("author_handle")
             author_str = f"@{author}" if author and author.lower() not in ("i", "status") else "X Post"
 
+            # Telegram user who posted this link
+            tg_username = item.get("tg_username")
+            tg_first_name = item.get("tg_first_name")
+            tg_uid = item.get("telegram_id")
+            if tg_username:
+                tg_poster_str = f"@{tg_username}"
+            elif tg_first_name:
+                if tg_uid:
+                    tg_poster_str = f'<a href="tg://user?id={tg_uid}">{tg_first_name}</a>'
+                else:
+                    tg_poster_str = tg_first_name
+            elif tg_uid:
+                tg_poster_str = f"User {tg_uid}"
+            else:
+                tg_poster_str = "User"
+
             if item["is_verified"]:
                 if item.get("verified_by_handle") == "waived_deleted_tweet":
                     status_str = "🗑️ <i>Waived (Tweet Deleted on X)</i>"
@@ -63,7 +79,10 @@ def format_assignment_message(
             else:
                 status_str = "⏳ <i>Pending</i>"
 
-            lines.append(f"{idx}. 👤 <b>{author_str}</b>: <a href=\"{url}\">{url}</a>\n   └ Status: {status_str}")
+            lines.append(
+                f"{idx}. 👤 <b>{author_str}</b> (TG: <b>{tg_poster_str}</b>): <a href=\"{url}\">{url}</a>\n"
+                f"   └ Status: {status_str}"
+            )
 
         lines.append(
             "\n💡 <i>Leave a comment on the posts above using any of your declared X accounts. "
@@ -92,7 +111,15 @@ async def handle_potential_link(message: types.Message, db: Database):
     telegram_id = message.from_user.id
     is_group = message.chat.type in ("group", "supergroup")
     chat_id = message.chat.id if is_group else None
-    user_mention = message.from_user.mention_html()
+
+    # Submitter Telegram display name / username
+    user = message.from_user
+    if user and user.username:
+        user_mention = f"@{user.username}"
+    elif user and user.first_name:
+        user_mention = f'<a href="tg://user?id={user.id}">{user.first_name}</a>'
+    else:
+        user_mention = f"User {telegram_id}"
 
     # Automatically delete the user's raw pasted link to keep chat/group clean
     try:
@@ -101,7 +128,6 @@ async def handle_potential_link(message: types.Message, db: Database):
         logger.debug("Could not delete user link message: %s", e)
 
     # Ensure user exists in users table
-    user = message.from_user
     if user:
         await db.upsert_user(
             telegram_id=telegram_id,
@@ -133,31 +159,7 @@ async def handle_potential_link(message: types.Message, db: Database):
 
     declared_handles = [acc["x_username"] for acc in user_accounts]
 
-    # Check if this tweet was already submitted
-    existing_post = await db.get_post_by_tweet_id(tweet_id)
-    if existing_post:
-        # Already submitted - retrieve assignments
-        assignments = await db.get_assignments(existing_post["id"])
-        msg_text, verified_count, total_count, is_completed = format_assignment_message(
-            existing_post["tweet_url"],
-            assignments,
-            declared_handles,
-            submitter_mention=user_mention
-        )
-        await message.answer(
-            "ℹ️ <b>This tweet has already been registered!</b>\n\n" + msg_text,
-            parse_mode="HTML",
-            disable_web_page_preview=True,
-            reply_markup=get_task_keyboard(
-                existing_post["id"],
-                verified_count,
-                total_count,
-                is_completed
-            )
-        )
-        return
-
-    # Add post to queue
+    # Add post to queue (same tweet can be registered multiple times)
     new_post_id = await db.add_post(
         telegram_id=telegram_id,
         tweet_id=tweet_id,
@@ -169,18 +171,19 @@ async def handle_potential_link(message: types.Message, db: Database):
         await message.answer("❌ Error registering post in database. Please try again.")
         return
 
-    # Fetch 15 posts submitted above this one (scoped to group if in group)
+    # Fetch 15 posts submitted above this one (scoped to group if in group, excluding same tweet)
     posts_above = await db.get_posts_above(
         current_post_id=new_post_id,
         exclude_telegram_id=telegram_id,
         limit=config.ASSIGNMENT_COUNT,
-        chat_id=chat_id
+        chat_id=chat_id,
+        exclude_tweet_id=tweet_id
     )
 
     assigned_post_ids = [p["id"] for p in posts_above]
     await db.create_assignments(telegram_id, new_post_id, assigned_post_ids)
 
-    # Get created assignments
+    # Get created assignments (includes poster's TG username)
     assignments = await db.get_assignments(new_post_id)
 
     msg_text, verified_count, total_count, is_completed = format_assignment_message(
