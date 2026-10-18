@@ -156,6 +156,52 @@ class TestEngagementBot(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(updated_assignments[0]["is_verified"], 1)
         self.assertEqual(updated_assignments[0]["verified_by_handle"], "newuser_alt")
 
+    async def test_15_unique_links_above_with_duplicates(self):
+        """
+        Verify that when previous posts contain duplicate tweets,
+        get_posts_above skips duplicates and returns exactly 15 UNIQUE links.
+        """
+        uid = 55555
+        await self.db.upsert_user(uid, "test_poster", "Test Poster")
+
+        # Insert 30 posts, but only 16 are unique (many duplicates interspersed)
+        unique_tweet_ids = [f"unique_tweet_{i}" for i in range(1, 17)]
+        sequence = unique_tweet_ids + unique_tweet_ids[:10] + unique_tweet_ids[:5]
+        for tid in sequence:
+            await self.db.add_post(
+                telegram_id=uid,
+                tweet_id=tid,
+                tweet_url=f"https://x.com/user/status/{tid}",
+                author_handle="poster"
+            )
+
+        # Now a new user submits a post
+        new_uid = 77777
+        await self.db.upsert_user(new_uid, "commenter", "Commenter")
+        current_post_id = await self.db.add_post(
+            telegram_id=new_uid,
+            tweet_id="new_submitter_tweet",
+            tweet_url="https://x.com/commenter/status/99999",
+            author_handle="commenter"
+        )
+
+        posts_above = await self.db.get_posts_above(
+            current_post_id=current_post_id,
+            exclude_telegram_id=new_uid,
+            limit=15,
+            exclude_tweet_id="new_submitter_tweet"
+        )
+
+        self.assertEqual(len(posts_above), 15)
+        # Verify all 15 tweet_ids are distinct
+        tweet_ids = [p["tweet_id"] for p in posts_above]
+        self.assertEqual(len(set(tweet_ids)), 15)
+        # Verify all 15 tweet_urls are distinct
+        tweet_urls = [p["tweet_url"] for p in posts_above]
+        self.assertEqual(len(set(tweet_urls)), 15)
+        # Verify the current post's tweet is not in the assigned list
+        self.assertNotIn("new_submitter_tweet", tweet_ids)
+
     def test_sorsa_comment_matching_logic(self):
         client = SorsaClient(api_keys=["dummy_key"])
         

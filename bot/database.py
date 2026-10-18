@@ -247,52 +247,80 @@ class Database:
     async def get_posts_above(
         self,
         current_post_id: int,
-        exclude_telegram_id: int,
+        exclude_telegram_id: Optional[int] = None,
         limit: int = 15,
         chat_id: Optional[int] = None,
         exclude_tweet_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """
-        Fetches up to `limit` posts submitted prior to `current_post_id`,
-        excluding posts submitted by the same user and optionally excluding current tweet_id.
-        If chat_id is provided, filters by group chat_id.
-        Deduplicates by tweet_id so the assignee gets distinct tweets to comment on.
+        Fetches up to `limit` 100% unique posts submitted prior to `current_post_id`.
+        - Guarantees each returned post has a unique tweet_id and unique tweet_url.
+        - Excludes the current submission's tweet_id so user never comments on their own post.
+        - Prefers posts submitted by other users, but falls back to other unique posts if needed.
+        - Scoped to group chat_id if provided.
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            query_parts = ["id < ?", "telegram_id != ?"]
-            params = [current_post_id, exclude_telegram_id]
 
-            if exclude_tweet_id:
-                query_parts.append("tweet_id != ?")
-                params.append(exclude_tweet_id)
+            async def fetch_distinct(exclude_user: bool) -> List[Dict[str, Any]]:
+                query_parts = ["id < ?"]
+                params: List[Any] = [current_post_id]
 
-            if chat_id is not None:
-                query_parts.append("chat_id = ?")
-                params.append(chat_id)
+                if exclude_tweet_id:
+                    query_parts.append("tweet_id != ?")
+                    params.append(exclude_tweet_id)
 
-            where_clause = " AND ".join(query_parts)
-            query = f"""
-                SELECT id, telegram_id, chat_id, tweet_id, tweet_url, author_handle, created_at, status
-                FROM posts_queue
-                WHERE {where_clause}
-                ORDER BY id DESC
-                LIMIT ?
-            """
-            params.append(limit * 3)
+                if exclude_user and exclude_telegram_id:
+                    query_parts.append("telegram_id != ?")
+                    params.append(exclude_telegram_id)
 
-            async with db.execute(query, tuple(params)) as cursor:
-                rows = await cursor.fetchall()
-                seen_tweet_ids = set()
-                distinct_posts = []
-                for row in rows:
-                    t_id = row["tweet_id"]
-                    if t_id not in seen_tweet_ids:
-                        seen_tweet_ids.add(t_id)
-                        distinct_posts.append(dict(row))
-                        if len(distinct_posts) >= limit:
+                if chat_id is not None:
+                    query_parts.append("chat_id = ?")
+                    params.append(chat_id)
+
+                where_clause = " AND ".join(query_parts)
+
+                # Fetch all previous posts in reverse chronological order to extract unique links
+                query = f"""
+                    SELECT id, telegram_id, chat_id, tweet_id, tweet_url, author_handle, created_at, status
+                    FROM posts_queue
+                    WHERE {where_clause}
+                    ORDER BY id DESC
+                """
+                async with db.execute(query, tuple(params)) as cursor:
+                    rows = await cursor.fetchall()
+                    seen_tids = set()
+                    seen_urls = set()
+                    unique_results = []
+                    for r in rows:
+                        tid = str(r["tweet_id"]).strip()
+                        turl = str(r["tweet_url"]).strip().lower().rstrip("/")
+                        if tid not in seen_tids and turl not in seen_urls:
+                            seen_tids.add(tid)
+                            seen_urls.add(turl)
+                            unique_results.append(dict(r))
+                            if len(unique_results) >= limit:
+                                break
+                    return unique_results
+
+            # First, try to fetch distinct posts excluding the user's own posts
+            posts = await fetch_distinct(exclude_user=True)
+            if len(posts) < limit and exclude_telegram_id:
+                # If not enough posts from other users, fill with other unique posts above (still excluding current tweet)
+                all_posts = await fetch_distinct(exclude_user=False)
+                seen_tids = {str(p["tweet_id"]).strip() for p in posts}
+                seen_urls = {str(p["tweet_url"]).strip().lower().rstrip("/") for p in posts}
+                for p in all_posts:
+                    tid = str(p["tweet_id"]).strip()
+                    turl = str(p["tweet_url"]).strip().lower().rstrip("/")
+                    if tid not in seen_tids and turl not in seen_urls:
+                        seen_tids.add(tid)
+                        seen_urls.add(turl)
+                        posts.append(p)
+                        if len(posts) >= limit:
                             break
-                return distinct_posts
+
+            return posts
 
     # Task Assignments
     async def create_assignments(
