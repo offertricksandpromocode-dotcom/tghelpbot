@@ -1,0 +1,8 @@
+services:
+  telegram-bot:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./engagement_bot.db:/app/engagement_bot.db

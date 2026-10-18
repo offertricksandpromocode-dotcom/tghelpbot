@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: telegram-engagement-bot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: SORSA_API_KEYS
+        sync: false
+      - key: ASSIGNMENT_COUNT
+        value: 15
+      - key: SORSA_API_BASE_URL
+        value: https://api.sorsa.io/v3
